@@ -227,11 +227,91 @@ export class LibroController {
             const filtro: any = {};
 
             if (termino) {
-                filtro.$text = { $search: termino as string };
+                // Limpia el término de búsqueda de signos de puntuación y acentos
+                const cleanTerm = (termino as string)
+                    .normalize("NFD")
+                    .replace(/[\u0300-\u036f]/g, "") // Elimina acentos
+                    .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()"""'']/g, "") // Elimina puntuación
+                    .trim();
+
+                // Crea una expresión regular que sea flexible con la puntuación
+                const regexPattern = cleanTerm
+                    .split('')
+                    .map(char => `${char}[.,\\/#!$%\\^&\\*;:{}=\\-_\`~()"""'']*`)
+                    .join('');
+
+                const regex = new RegExp(regexPattern, 'i');
+
+                // Conversión del término a número si es posible (para búsqueda por año)
+                const numberTerm = !isNaN(Number(cleanTerm)) ? Number(cleanTerm) : null;
+
+                filtro.$or = [
+                    {
+                        titulo: {
+                            $regex: regex
+                        }
+                    },
+                    {
+                        autor: {
+                            $regex: regex
+                        }
+                    },
+                    {
+                        isbn: {
+                            $regex: regex
+                        }
+                    },
+                    {
+                        editorial: {
+                            $regex: regex
+                        }
+                    },
+                    {
+                        idioma: {
+                            $regex: regex
+                        }
+                    },
+                    {
+                        generos: {
+                            $regex: regex
+                        }
+                    },
+                    {
+                        descripcion: {
+                            $regex: regex
+                        }
+                    },
+                    {
+                        palabrasClave: {
+                            $regex: regex
+                        }
+                    }
+                ];
+
+                // Agregar búsqueda por año si el término es un número
+                if (numberTerm !== null) {
+                    filtro.$or.push({ añoPublicacion: numberTerm });
+                }
+
+                // Búsqueda en campos anidados
+                const termLower = cleanTerm.toLowerCase();
+                if (termLower === 'disponible') {
+                    filtro.$or.push({ 'inventario.disponible': { $gt: 0 } });
+                }
+                if (termLower === 'no disponible') {
+                    filtro.$or.push({ 'inventario.disponible': 0 });
+                }
             }
 
+            // Filtros adicionales específicos
             if (generos) {
-                filtro.generos = { $in: (generos as string).split(',') };
+                const cleanGeneros = (generos as string)
+                    .normalize("NFD")
+                    .replace(/[\u0300-\u036f]/g, "")
+                    .split(',')
+                    .map(g => new RegExp(g.trim(), 'i'));
+
+                filtro.generos = { $in: cleanGeneros };
             }
 
             if (añoDesde || añoHasta) {
@@ -240,13 +320,27 @@ export class LibroController {
                 if (añoHasta) filtro.añoPublicacion.$lte = Number(añoHasta);
             }
 
-            if (idioma) filtro.idioma = idioma;
-            if (disponible === 'true') filtro['inventario.disponible'] = { $gt: 0 };
-            if (condicion) filtro['estado.condicion'] = condicion;
+            if (idioma) {
+                const cleanIdioma = (idioma as string)
+                    .normalize("NFD")
+                    .replace(/[\u0300-\u036f]/g, "");
+                filtro.idioma = new RegExp(cleanIdioma, 'i');
+            }
+
+            if (disponible === 'true') {
+                filtro['inventario.disponible'] = { $gt: 0 };
+            }
+
+            if (condicion) {
+                const cleanCondicion = (condicion as string)
+                    .normalize("NFD")
+                    .replace(/[\u0300-\u036f]/g, "");
+                filtro['estado.condicion'] = new RegExp(cleanCondicion, 'i');
+            }
 
             const libros = await Libro.find(filtro)
-                .sort({ score: { $meta: "textScore" } })
-                .limit(20);
+                .limit(20)
+                .sort({ 'inventario.disponible': -1, añoPublicacion: -1 });
 
             res.json({
                 resultados: libros.length,
