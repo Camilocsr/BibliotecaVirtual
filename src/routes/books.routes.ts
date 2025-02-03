@@ -6,6 +6,7 @@ import MulterService from '../services/multerService';
 const router = Router();
 
 router.get('/libros', LibroController.obtenerTodos);
+router.get('/libros/paginacion', LibroController.obtenerLibrosPaginacion);
 router.get('/libros/buscar', LibroController.busquedaAvanzada);
 router.get('/libros/:id', LibroController.obtenerPorId);
 

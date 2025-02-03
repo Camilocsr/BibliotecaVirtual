@@ -107,6 +107,60 @@ export class LibroController {
         }
     };
 
+    static obtenerLibrosPaginacion: RequestHandler = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const {
+                pagina = 1,
+                limite = 10,
+                titulo,
+                autor,
+                genero,
+                disponible,
+                condicion,
+                ordenarPor = 'createdAt',
+                orden = 'desc'
+            } = req.query;
+
+            const filtro: any = {};
+
+            // Aplicar filtros si existen
+            if (titulo) filtro.titulo = new RegExp(String(titulo), 'i');
+            if (autor) filtro.autor = new RegExp(String(autor), 'i');
+            if (genero) filtro.generos = genero;
+            if (disponible === 'true') filtro['inventario.disponible'] = { $gt: 0 };
+            if (condicion) filtro['estado.condicion'] = condicion;
+
+            // Configurar opciones de ordenamiento
+            const sortOptions: any = {};
+            sortOptions[String(ordenarPor)] = orden === 'asc' ? 1 : -1;
+
+            const skip = (Number(pagina) - 1) * Number(limite);
+
+            // Ejecutar consultas en paralelo
+            const [libros, total] = await Promise.all([
+                Libro.find(filtro)
+                    .skip(skip)
+                    .limit(Number(limite))
+                    .sort(sortOptions)
+                    .select('-__v'),
+                Libro.countDocuments(filtro)
+            ]);
+
+            res.json({
+                libros,
+                total,
+                paginas: Math.ceil(total / Number(limite)),
+                paginaActual: Number(pagina),
+                porPagina: Number(limite)
+            });
+        } catch (error: unknown) {
+            res.status(500).json({
+                mensaje: 'Error al obtener los libros',
+                error: getErrorMessage(error)
+            });
+        }
+    };
+
     static obtenerPorId: RequestHandler = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
             const { id } = req.params;
