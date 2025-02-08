@@ -4,7 +4,7 @@ import { verificarToken, esAdmin } from '../middleware/auth.middleware';
 
 const router = Router();
 
-router.get('/prestamos/usuario/:usuarioId', [verificarToken], PrestamoController.obtenerPrestamosUsuario);
+router.get('/prestamos/usuario/:identificador', [verificarToken], PrestamoController.obtenerPrestamosUsuario);
 router.get('/prestamos/:id', [verificarToken], PrestamoController.obtenerPrestamo);
 router.get('/prestamos/:id/estado', [verificarToken], PrestamoController.verificarEstado);
 

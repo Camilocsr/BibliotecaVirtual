@@ -17,8 +17,28 @@ interface IUsuarioPopulado extends Omit<IUsuario, 'multas'> {
 export class PrestamoController {
     static async obtenerPrestamosUsuario(req: Request, res: Response): Promise<void> {
         try {
-            const { usuarioId } = req.params;
-            const prestamos = await Prestamo.find({ usuario: usuarioId })
+            const { identificador } = req.params; // puede ser ID o email
+
+            // Determinar si el identificador es un ID válido de MongoDB
+            const esMongoId = Types.ObjectId.isValid(identificador);
+
+            // Buscar el usuario por ID o email
+            let usuario;
+            if (esMongoId) {
+                usuario = await Usuario.findById(identificador);
+            } else {
+                usuario = await Usuario.findOne({ email: identificador });
+            }
+
+            if (!usuario) {
+                res.status(404).json({
+                    mensaje: 'Usuario no encontrado'
+                });
+                return;
+            }
+
+            // Buscar los préstamos usando el ID del usuario
+            const prestamos = await Prestamo.find({ usuario: usuario._id })
                 .populate<{ libro: ILibro }>('libro')
                 .sort({ 'fechas.prestamo': -1 });
 
@@ -55,20 +75,31 @@ export class PrestamoController {
     }
 
     static async crear(req: Request, res: Response): Promise<void> {
+        console.log(`Datos del préstamo recibidos: ${JSON.stringify(req.body)}`);
         try {
             const {
                 usuarioId,
+                email,
                 libroId,
                 tipo,
                 diasPrestamo = 14
             } = req.body;
 
-            // Buscar usuario y poblar multas
-            const usuario = await Usuario.findById(usuarioId)
-                .populate<{ multas: IMulta[] }>('multas') as IUsuarioPopulado | null;
+            // Buscar usuario por ID o email
+            let usuario: IUsuarioPopulado | null = null;
+
+            if (usuarioId) {
+                usuario = await Usuario.findById(usuarioId)
+                    .populate<{ multas: IMulta[] }>('multas') as IUsuarioPopulado;
+            } else if (email) {
+                usuario = await Usuario.findOne({ email })
+                    .populate<{ multas: IMulta[] }>('multas') as IUsuarioPopulado;
+            }
 
             if (!usuario) {
-                res.status(404).json({ mensaje: 'Usuario no encontrado' });
+                res.status(404).json({
+                    mensaje: 'Usuario no encontrado. Proporcione un ID o email válido.'
+                });
                 return;
             }
 
@@ -95,7 +126,7 @@ export class PrestamoController {
             }
 
             const prestamosActivos = await Prestamo.countDocuments({
-                usuario: usuarioId,
+                usuario: usuario._id,
                 estado: { $in: ['activo', 'atrasado'] }
             });
 
@@ -124,7 +155,7 @@ export class PrestamoController {
             }
 
             const nuevoPrestamo = new Prestamo({
-                usuario: new Types.ObjectId(usuarioId),
+                usuario: usuario._id,
                 libro: new Types.ObjectId(libroId),
                 tipo,
                 estado: 'activo',
@@ -142,7 +173,7 @@ export class PrestamoController {
             await Promise.all([
                 nuevoPrestamo.save(),
                 libro.save(),
-                Usuario.findByIdAndUpdate(usuarioId, {
+                Usuario.findByIdAndUpdate(usuario._id, {
                     $push: { prestamos: nuevoPrestamo._id }
                 })
             ]);

@@ -189,7 +189,7 @@ const usuarioSchema = new Schema<IUsuario>({
         codigoPostal: String
     },
     estado: {
-        activo: { type: Boolean, default: true },
+        activo: { type: Boolean, default: false },
         vetado: { type: Boolean, default: false },
         razonVeto: String,
         fechaFinVeto: Date
