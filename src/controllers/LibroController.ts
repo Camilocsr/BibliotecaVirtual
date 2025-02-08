@@ -8,19 +8,64 @@ import { S3Service } from '../services/AWS/s3.service';
 export class LibroController {
     static crear: RequestHandler = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
-            const libroData = JSON.parse(req.body.datos);
-
-            const libroExistente = await Libro.findOne({ isbn: libroData.isbn });
-            if (libroExistente) {
+            // 1. Validar que existan datos
+            if (!req.body.datos) {
                 res.status(400).json({
-                    mensaje: 'Ya existe un libro con este ISBN'
+                    mensaje: 'No se recibieron datos del libro',
+                    error: 'datos_requeridos'
                 });
                 return;
             }
 
-            // Subir imagen a S3
-            const file = req.file;
+            // 2. Parsear los datos
+            let libroData;
+            try {
+                libroData = JSON.parse(req.body.datos);
+            } catch (e) {
+                res.status(400).json({
+                    mensaje: 'Error al procesar los datos del libro',
+                    error: 'formato_invalido',
+                    detalles: e instanceof Error ? e.message : 'Error al parsear JSON'
+                });
+                return;
+            }
 
+            // 3. Validar campos requeridos
+            const camposRequeridos = [
+                'isbn',
+                'titulo',
+                'autor',
+                'editorial',
+                'añoPublicacion',
+                'idioma',
+                'ubicacion',
+                'inventario',
+                'precio'
+            ];
+
+            const camposFaltantes = camposRequeridos.filter(campo => !libroData[campo]);
+            if (camposFaltantes.length > 0) {
+                res.status(400).json({
+                    mensaje: `Faltan campos requeridos: ${camposFaltantes.join(', ')}`,
+                    error: 'campos_faltantes',
+                    campos: camposFaltantes
+                });
+                return;
+            }
+
+            // 4. Verificar ISBN duplicado
+            const libroExistente = await Libro.findOne({ isbn: libroData.isbn });
+            if (libroExistente) {
+                res.status(400).json({
+                    mensaje: 'Ya existe un libro con este ISBN',
+                    error: 'isbn_duplicado',
+                    isbn: libroData.isbn
+                });
+                return;
+            }
+
+            // 5. Procesar imagen si existe
+            const file = req.file;
             if (file) {
                 try {
                     // Leer el archivo como Buffer
@@ -29,18 +74,23 @@ export class LibroController {
                     const s3Service = new S3Service();
                     const imagenfile = await s3Service.uploadImage(fileBuffer, file.filename);
 
-                    console.log(imagenfile.publicUrl);
-
+                    console.log('URL de imagen subida:', imagenfile.publicUrl);
                     libroData.portada = imagenfile.publicUrl;
 
-                    // Opcional: Eliminar el archivo temporal después de subirlo
+                    // Eliminar el archivo temporal
                     await fs.unlink(file.path);
                 } catch (error) {
                     console.error('Error al procesar la imagen:', error);
-                    // Manejar el error según necesites
+                    res.status(500).json({
+                        mensaje: 'Error al procesar la imagen del libro',
+                        error: 'error_imagen',
+                        detalles: error instanceof Error ? error.message : 'Error al procesar imagen'
+                    });
+                    return;
                 }
             }
 
+            // 6. Crear y guardar el libro
             const libro = new Libro({
                 ...libroData,
                 inventario: {
@@ -51,16 +101,30 @@ export class LibroController {
                 },
             });
 
-            await libro.save();
+            try {
+                await libro.save();
+                res.status(201).json({
+                    mensaje: 'Libro creado exitosamente',
+                    libro,
+                    codigo: 'libro_creado'
+                });
+            } catch (error) {
+                // Error específico de MongoDB/Mongoose
+                console.error('Error al guardar el libro:', error);
+                res.status(500).json({
+                    mensaje: 'Error al guardar el libro en la base de datos',
+                    error: 'error_db',
+                    detalles: error instanceof Error ? error.message : 'Error al guardar'
+                });
+            }
 
-            res.status(201).json({
-                mensaje: 'Libro creado exitosamente',
-                libro
-            });
         } catch (error: unknown) {
+            // Error general
+            console.error('Error general al crear libro:', error);
             res.status(500).json({
                 mensaje: 'Error al crear el libro',
-                error: getErrorMessage(error)
+                error: 'error_general',
+                detalles: getErrorMessage(error)
             });
         }
     };
@@ -184,84 +248,261 @@ export class LibroController {
 
     static actualizar: RequestHandler = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
-            const { id } = req.params;
-            const actualizacion = req.body;
+            // Log completo de la solicitud entrante
+            console.log('Solicitud de actualización recibida:');
+            console.log('Parámetros:', req.params);
+            console.log('Cuerpo de la solicitud:', req.body);
+            console.log('Archivos:', req.file);
 
-            const libroExistente = await Libro.findById(id);
-            if (!libroExistente) {
-                res.status(404).json({
-                    mensaje: 'Libro no encontrado'
+            const { id } = req.params;
+
+            // Verificar la existencia y tipo de datos
+            if (!req.body || !req.body.datos) {
+                console.error('No se recibieron datos para actualizar');
+                res.status(400).json({
+                    mensaje: 'No se recibieron datos para actualizar',
+                    error: 'datos_faltantes'
                 });
                 return;
             }
 
+            // Parsear los datos con registro detallado
+            let actualizacion;
+            try {
+                console.log('Intentando parsear datos:', req.body.datos);
+                actualizacion = JSON.parse(req.body.datos);
+                // console.log('Datos parseados:', JSON.stringify(actualizacion, null, 2));
+            } catch (e) {
+                console.error('Error al parsear JSON:', e);
+                console.error('Contenido recibido:', req.body.datos);
+                res.status(400).json({
+                    mensaje: 'Error al procesar los datos del libro',
+                    error: 'formato_invalido',
+                    detalles: e instanceof Error ? e.message : 'Error al parsear JSON',
+                    contenidoRecibido: req.body.datos
+                });
+                return;
+            }
+
+            // Verificar existencia del libro
+            const libroExistente = await Libro.findById(id);
+            if (!libroExistente) {
+                console.error(`Libro no encontrado con ID: ${id}`);
+                res.status(404).json({
+                    mensaje: 'Libro no encontrado',
+                    error: 'libro_no_encontrado',
+                    id: id
+                });
+                return;
+            }
+
+            // Validar ISBN duplicado
             if (actualizacion.isbn && actualizacion.isbn !== libroExistente.isbn) {
                 const isbnExistente = await Libro.findOne({ isbn: actualizacion.isbn });
                 if (isbnExistente) {
+                    console.error(`ISBN duplicado: ${actualizacion.isbn}`);
                     res.status(400).json({
-                        mensaje: 'Ya existe un libro con este ISBN'
+                        mensaje: 'Ya existe un libro con este ISBN',
+                        error: 'isbn_duplicado',
+                        isbn: actualizacion.isbn
                     });
                     return;
                 }
             }
 
+            // Validar coherencia del inventario
             if (actualizacion.inventario) {
                 const { total, disponible, prestados, reservados } = actualizacion.inventario;
                 if (total !== (disponible + prestados + reservados)) {
+                    console.error('Inventario inconsistente', {
+                        total,
+                        disponible,
+                        prestados,
+                        reservados,
+                        suma: disponible + prestados + reservados
+                    });
                     res.status(400).json({
-                        mensaje: 'Los números del inventario no cuadran con el total'
+                        mensaje: 'Los números del inventario no cuadran con el total',
+                        error: 'inventario_inconsistente',
+                        detalles: {
+                            total,
+                            disponible,
+                            prestados,
+                            reservados,
+                            suma: disponible + prestados + reservados
+                        }
                     });
                     return;
                 }
             }
 
+            // Procesar imagen si existe
+            const file = req.file;
+            if (file) {
+                try {
+                    // Leer el archivo como Buffer
+                    const fileBuffer = await fs.readFile(file.path);
+
+                    const s3Service = new S3Service();
+                    const imagenfile = await s3Service.uploadImage(fileBuffer, file.filename);
+
+                    console.log('URL de imagen subida:', imagenfile.publicUrl);
+                    actualizacion.portada = imagenfile.publicUrl;
+
+                    // Eliminar el archivo temporal
+                    await fs.unlink(file.path);
+                } catch (error) {
+                    console.error('Error al procesar la imagen:', error);
+                    res.status(500).json({
+                        mensaje: 'Error al procesar la imagen del libro',
+                        error: 'error_imagen',
+                        detalles: error instanceof Error ? error.message : 'Error al procesar imagen'
+                    });
+                    return;
+                }
+            }
+
+            // Ejecutar la actualización
             const libroActualizado = await Libro.findByIdAndUpdate(
                 id,
                 { $set: actualizacion },
                 { new: true, runValidators: true }
             );
 
+            console.log('Libro actualizado:', libroActualizado);
+
             res.json({
                 mensaje: 'Libro actualizado exitosamente',
-                libro: libroActualizado
+                libro: libroActualizado,
+                codigo: 'libro_actualizado'
             });
+
         } catch (error: unknown) {
+            console.error('Error al actualizar el libro:', error);
             res.status(500).json({
                 mensaje: 'Error al actualizar el libro',
-                error: getErrorMessage(error)
+                error: 'error_general',
+                detalles: getErrorMessage(error)
             });
         }
     };
 
     static eliminar: RequestHandler = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
+            console.log('Solicitud de eliminación recibida');
+            console.log('Parámetros de la solicitud:', req.params);
+            console.log('Cabeceras de la solicitud:', req.headers);
+    
             const { id } = req.params;
-
-            const libro = await Libro.findById(id);
-            if (!libro) {
-                res.status(404).json({
-                    mensaje: 'Libro no encontrado'
-                });
-                return;
-            }
-
-            if (libro.inventario.prestados > 0) {
+    
+            if (!id) {
+                console.error('No se proporcionó un ID de libro');
                 res.status(400).json({
-                    mensaje: 'No se puede eliminar un libro con préstamos activos'
+                    mensaje: 'ID de libro no proporcionado',
+                    error: 'id_faltante'
                 });
                 return;
             }
-
-            libro.estado.activo = false;
-            await libro.save();
-
-            res.json({
-                mensaje: 'Libro eliminado exitosamente'
-            });
+    
+            console.log(`Buscando libro con ID: ${id}`);
+            const libro = await Libro.findById(id);
+    
+            if (!libro) {
+                console.error(`Libro no encontrado con ID: ${id}`);
+                res.status(404).json({
+                    mensaje: 'Libro no encontrado',
+                    error: 'libro_no_encontrado',
+                    detalles: {
+                        id: id
+                    }
+                });
+                return;
+            }
+    
+            if (libro.inventario.prestados > 0) {
+                console.warn('Intento de eliminar libro con préstamos activos', {
+                    prestados: libro.inventario.prestados,
+                    reservados: libro.inventario.reservados
+                });
+                res.status(400).json({
+                    mensaje: 'No se puede eliminar un libro con préstamos activos',
+                    error: 'libros_prestados',
+                    detalles: {
+                        prestados: libro.inventario.prestados,
+                        reservados: libro.inventario.reservados,
+                        titulo: libro.titulo,
+                        isbn: libro.isbn
+                    }
+                });
+                return;
+            }
+    
+            if (libro.inventario.reservados > 0) {
+                console.warn('Intento de eliminar libro con reservas activas', {
+                    reservados: libro.inventario.reservados,
+                    prestados: libro.inventario.prestados
+                });
+                res.status(400).json({
+                    mensaje: 'No se puede eliminar un libro con reservas activas',
+                    error: 'libros_reservados',
+                    detalles: {
+                        reservados: libro.inventario.reservados,
+                        prestados: libro.inventario.prestados,
+                        titulo: libro.titulo,
+                        isbn: libro.isbn
+                    }
+                });
+                return;
+            }
+            
+            try {
+                const libroEliminado = await Libro.findByIdAndDelete(id);
+    
+                if (!libroEliminado) {
+                    console.error(`No se pudo eliminar el libro con ID: ${id}`);
+                    res.status(500).json({
+                        mensaje: 'Error al eliminar el libro',
+                        error: 'eliminacion_fallida',
+                        detalles: {
+                            id: id
+                        }
+                    });
+                    return;
+                }
+    
+                console.log('Libro eliminado exitosamente', {
+                    id: libroEliminado._id,
+                    titulo: libroEliminado.titulo
+                });
+    
+                res.json({
+                    mensaje: 'Libro eliminado exitosamente',
+                    codigo: 'libro_eliminado',
+                    libro: {
+                        _id: libroEliminado._id,
+                        titulo: libroEliminado.titulo
+                    }
+                });
+            } catch (deleteError) {
+                console.error('Error al eliminar el libro:', deleteError);
+                res.status(500).json({
+                    mensaje: 'Error al eliminar el libro',
+                    error: 'error_eliminacion',
+                    detalles: getErrorMessage(deleteError)
+                });
+            }
+    
         } catch (error: unknown) {
+            // Manejo de errores generales con máximo detalle
+            console.error('Error general al eliminar el libro:', error);
             res.status(500).json({
                 mensaje: 'Error al eliminar el libro',
-                error: getErrorMessage(error)
+                error: 'error_general',
+                detalles: {
+                    mensaje: getErrorMessage(error),
+                    tipo: typeof error,
+                    stringError: String(error)
+                }
             });
         }
     };
